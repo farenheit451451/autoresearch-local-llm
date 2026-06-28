@@ -21,7 +21,7 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = os.environ.get("AUTORESEARCH_MODEL", "Qwen3.5:latest")
+MODEL = os.environ.get("AUTORESEARCH_MODEL", "qwen3.5:9b")
 TRAIN_SCRIPT = "train.py"
 RESULTS_FILE = "results.tsv"
 RUN_LOG = "run.log"

@@ -77,7 +77,7 @@ ollama serve &
 ollama pull qwen3.5:9b
 
 # Clone and setup
-git clone https://github.com/SohniSwatantra/autoresearch-local-llm.git
+git clone https://github.com/farenheit451451/autoresearch-local-llm.git
 cd autoresearch-local-llm
 pip install uv
 uv sync
