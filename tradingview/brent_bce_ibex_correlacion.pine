@@ -1,0 +1,191 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Brent · Tipos BCE · IBEX 35 — Divergencia y Correlación
+//
+// 1) Dibuja las tres series en una base común (Base 100 o Z-Score) para ver
+//    visualmente cómo divergen.
+// 2) Calcula correlación y covarianza por pares (Brent-BCE, Brent-IBEX,
+//    BCE-IBEX) en varios plazos, selecciona automáticamente el plazo con
+//    mayor |correlación| para cada par y evalúa su significación estadística
+//    (t de Student, 95%).
+//
+// Recomendado en gráfico Diario (D) o Semanal (W). El tipo del BCE
+// (ECONOMICS:EUINTR) es una serie escalonada de frecuencia baja.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Brent · Tipos BCE · IBEX 35 — Divergencia y Correlación", shorttitle = "Brent/BCE/IBEX", overlay = false)
+
+// ── Símbolos ─────────────────────────────────────────────────────────────────
+grpS = "Símbolos"
+symBrent = input.symbol("TVC:UKOIL",        "Brent",              group = grpS)
+symEcb   = input.symbol("ECONOMICS:EUINTR", "Tipo interés BCE",   group = grpS)
+symIbex  = input.symbol("BME:IBC",          "IBEX 35",            group = grpS)
+tf       = input.timeframe("",              "Marco temporal (vacío = el del gráfico)", group = grpS)
+
+// ── Normalización (base común) ───────────────────────────────────────────────
+grpN = "Base común"
+normMode = input.string("Base 100", "Modo de normalización", options = ["Base 100", "Z-Score"], group = grpN,
+     tooltip = "Base 100: todas las series arrancan en 100 en su primer dato del gráfico.\nZ-Score: desviaciones típicas respecto a su media móvil (mejor si el tipo BCE está cerca de 0%).")
+zLen = input.int(252, "Ventana Z-Score (barras)", minval = 10, group = grpN)
+
+// ── Estadísticas ─────────────────────────────────────────────────────────────
+grpC = "Correlación / Covarianza"
+useChanges = input.bool(false, "Usar variaciones (Δ) en vez de niveles", group = grpC,
+     tooltip = "Niveles: correlación sobre precios/tipos directamente (números altos, pero puede ser espuria por tendencia).\nΔ: correlación sobre variaciones (estadísticamente más robusta; con el tipo BCE puede salir na en ventanas sin cambios de tipos).")
+len1 = input.int(20,  "Plazo 1 (≈1 mes en Diario)",  minval = 5, group = grpC)
+len2 = input.int(60,  "Plazo 2 (≈3 meses)",          minval = 5, group = grpC)
+len3 = input.int(120, "Plazo 3 (≈6 meses)",          minval = 5, group = grpC)
+len4 = input.int(252, "Plazo 4 (≈1 año)",            minval = 5, group = grpC)
+showTable = input.bool(true, "Mostrar tabla de resultados", group = grpC)
+
+// ── Datos ────────────────────────────────────────────────────────────────────
+brent = request.security(symBrent, tf, close)
+ecb   = request.security(symEcb,   tf, close)
+ibex  = request.security(symIbex,  tf, close)
+
+// ── Base común ───────────────────────────────────────────────────────────────
+// Base 100: rebasa cada serie a 100 en su primer valor válido y distinto de 0.
+f_norm100(float src) =>
+    var float base = na
+    if na(base) and not na(src) and src != 0
+        base := src
+    100 * src / base
+
+f_z(float src, int len) =>
+    (src - ta.sma(src, len)) / ta.stdev(src, len)
+
+n100Brent = f_norm100(brent)
+n100Ecb   = f_norm100(ecb)
+n100Ibex  = f_norm100(ibex)
+zBrent    = f_z(brent, zLen)
+zEcb      = f_z(ecb,   zLen)
+zIbex     = f_z(ibex,  zLen)
+
+isB100 = normMode == "Base 100"
+nBrent = isB100 ? n100Brent : zBrent
+nEcb   = isB100 ? n100Ecb   : zEcb
+nIbex  = isB100 ? n100Ibex  : zIbex
+
+plot(nBrent, "Brent (norm.)",    color = color.new(#FF9800, 0), linewidth = 2)
+plot(nEcb,   "Tipo BCE (norm.)", color = color.new(#2962FF, 0), linewidth = 2)
+plot(nIbex,  "IBEX 35 (norm.)",  color = color.new(#089981, 0), linewidth = 2)
+plot(isB100 ? 100 : 0, "Línea base", color = color.new(color.gray, 60), linewidth = 1)
+
+// ── Series para las estadísticas ─────────────────────────────────────────────
+// En modo Δ: retorno % para Brent/IBEX, variación en puntos para el tipo BCE.
+sBrent = useChanges ? (brent - brent[1]) / brent[1] * 100 : brent
+sEcb   = useChanges ? ecb - ecb[1]                        : ecb
+sIbex  = useChanges ? (ibex - ibex[1]) / ibex[1] * 100    : ibex
+
+// Covarianza sobre la ventana: E[a·b] − E[a]·E[b]
+f_cov(float a, float b, int len) =>
+    ta.sma(a * b, len) - ta.sma(a, len) * ta.sma(b, len)
+
+// Estadístico t para H0: r = 0 (dos colas). Significativo al 95% si |t| > 1.96.
+f_t(float r, int n) =>
+    r * math.sqrt(n - 2) / math.sqrt(1 - r * r)
+
+// ── Correlaciones y covarianzas por par y plazo ──────────────────────────────
+// Brent vs BCE
+rBE1 = ta.correlation(sBrent, sEcb, len1)
+rBE2 = ta.correlation(sBrent, sEcb, len2)
+rBE3 = ta.correlation(sBrent, sEcb, len3)
+rBE4 = ta.correlation(sBrent, sEcb, len4)
+cBE1 = f_cov(sBrent, sEcb, len1)
+cBE2 = f_cov(sBrent, sEcb, len2)
+cBE3 = f_cov(sBrent, sEcb, len3)
+cBE4 = f_cov(sBrent, sEcb, len4)
+// Brent vs IBEX
+rBI1 = ta.correlation(sBrent, sIbex, len1)
+rBI2 = ta.correlation(sBrent, sIbex, len2)
+rBI3 = ta.correlation(sBrent, sIbex, len3)
+rBI4 = ta.correlation(sBrent, sIbex, len4)
+cBI1 = f_cov(sBrent, sIbex, len1)
+cBI2 = f_cov(sBrent, sIbex, len2)
+cBI3 = f_cov(sBrent, sIbex, len3)
+cBI4 = f_cov(sBrent, sIbex, len4)
+// BCE vs IBEX
+rEI1 = ta.correlation(sEcb, sIbex, len1)
+rEI2 = ta.correlation(sEcb, sIbex, len2)
+rEI3 = ta.correlation(sEcb, sIbex, len3)
+rEI4 = ta.correlation(sEcb, sIbex, len4)
+cEI1 = f_cov(sEcb, sIbex, len1)
+cEI2 = f_cov(sEcb, sIbex, len2)
+cEI3 = f_cov(sEcb, sIbex, len3)
+cEI4 = f_cov(sEcb, sIbex, len4)
+
+// Elige el plazo con mayor |r| (y devuelve su covarianza asociada)
+f_best(float r1, float c1, float r2, float c2, float r3, float c3, float r4, float c4) =>
+    rArr = array.from(r1, r2, r3, r4)
+    cArr = array.from(c1, c2, c3, c4)
+    lArr = array.from(len1, len2, len3, len4)
+    float bestR = na
+    float bestC = na
+    int   bestL = na
+    for i = 0 to 3
+        r = array.get(rArr, i)
+        if not na(r) and (na(bestR) or math.abs(r) > math.abs(bestR))
+            bestR := r
+            bestC := array.get(cArr, i)
+            bestL := array.get(lArr, i)
+    [bestL, bestR, bestC]
+
+[lBE, rBE, cBE] = f_best(rBE1, cBE1, rBE2, cBE2, rBE3, cBE3, rBE4, cBE4)
+[lBI, rBI, cBI] = f_best(rBI1, cBI1, rBI2, cBI2, rBI3, cBI3, rBI4, cBI4)
+[lEI, rEI, cEI] = f_best(rEI1, cEI1, rEI2, cEI2, rEI3, cEI3, rEI4, cEI4)
+
+tBE = f_t(rBE, lBE)
+tBI = f_t(rBI, lBI)
+tEI = f_t(rEI, lEI)
+
+// Correlaciones rodantes (ocultas por defecto: actívalas en
+// Configuración → Estilo si quieres verlas evolucionar en el tiempo)
+plot(rBE2, "r Brent-BCE (plazo 2)",  color = color.new(#7E57C2, 0), display = display.none)
+plot(rBI2, "r Brent-IBEX (plazo 2)", color = color.new(#EF5350, 0), display = display.none)
+plot(rEI2, "r BCE-IBEX (plazo 2)",   color = color.new(#26A69A, 0), display = display.none)
+
+// ── Tabla de resultados ──────────────────────────────────────────────────────
+color HDR_BG  = color.new(#363A45, 0)
+color ROW_BG  = color.new(#1E222D, 10)
+color BEST_BG = color.new(#2962FF, 70)
+color TXT_C   = color.white
+
+f_fmt(float v) =>
+    na(v) ? "na" : str.tostring(v, "0.000")
+
+f_cell(table tb, int col, int row, string txt, color bg, color fg) =>
+    table.cell(tb, col, row, txt, bgcolor = bg, text_color = fg, text_size = size.small)
+
+f_row(table tb, int row, string name, float r1, float r2, float r3, float r4, int bl, float br, float bc, float bt) =>
+    sig   = not na(bt) and math.abs(bt) > 1.96
+    sigBg = na(bt) ? ROW_BG : sig ? color.new(#089981, 60) : color.new(#F23645, 60)
+    f_cell(tb, 0, row, name, ROW_BG, TXT_C)
+    f_cell(tb, 1, row, f_fmt(r1), bl == len1 ? BEST_BG : ROW_BG, TXT_C)
+    f_cell(tb, 2, row, f_fmt(r2), bl == len2 ? BEST_BG : ROW_BG, TXT_C)
+    f_cell(tb, 3, row, f_fmt(r3), bl == len3 ? BEST_BG : ROW_BG, TXT_C)
+    f_cell(tb, 4, row, f_fmt(r4), bl == len4 ? BEST_BG : ROW_BG, TXT_C)
+    f_cell(tb, 5, row, na(bl) ? "na" : str.tostring(bl) + " barras", ROW_BG, TXT_C)
+    f_cell(tb, 6, row, f_fmt(br), BEST_BG, TXT_C)
+    f_cell(tb, 7, row, f_fmt(bc), ROW_BG, TXT_C)
+    f_cell(tb, 8, row, f_fmt(bt), ROW_BG, TXT_C)
+    f_cell(tb, 9, row, na(bt) ? "na" : sig ? "Sí" : "No", sigBg, TXT_C)
+
+if barstate.islast and showTable
+    var table tb = table.new(position.top_right, 10, 5, border_width = 1, border_color = color.new(color.gray, 70))
+    string modo = (useChanges ? "Δ variaciones" : "Niveles") + " · " + normMode
+    f_cell(tb, 0, 0, "Par (" + modo + ")", HDR_BG, TXT_C)
+    f_cell(tb, 1, 0, "r " + str.tostring(len1), HDR_BG, TXT_C)
+    f_cell(tb, 2, 0, "r " + str.tostring(len2), HDR_BG, TXT_C)
+    f_cell(tb, 3, 0, "r " + str.tostring(len3), HDR_BG, TXT_C)
+    f_cell(tb, 4, 0, "r " + str.tostring(len4), HDR_BG, TXT_C)
+    f_cell(tb, 5, 0, "Mejor plazo", HDR_BG, TXT_C)
+    f_cell(tb, 6, 0, "r mejor", HDR_BG, TXT_C)
+    f_cell(tb, 7, 0, "Covarianza", HDR_BG, TXT_C)
+    f_cell(tb, 8, 0, "t-stat", HDR_BG, TXT_C)
+    f_cell(tb, 9, 0, "¿Signif. 95%?", HDR_BG, TXT_C)
+
+    f_row(tb, 1, "Brent ↔ BCE",  rBE1, rBE2, rBE3, rBE4, lBE, rBE, cBE, tBE)
+    f_row(tb, 2, "Brent ↔ IBEX", rBI1, rBI2, rBI3, rBI4, lBI, rBI, cBI, tBI)
+    f_row(tb, 3, "BCE ↔ IBEX",   rEI1, rEI2, rEI3, rEI4, lEI, rEI, cEI, tEI)
+
+    table.merge_cells(tb, 0, 4, 9, 4)
+    f_cell(tb, 0, 4, "|t| > 1.96 ⇒ correlación ≠ 0 al 95% (aprox.). Ojo: sobre niveles la correlación puede ser espuria por tendencia común; usa el modo Δ para contrastarla.", color.new(#363A45, 40), color.new(color.white, 20))
